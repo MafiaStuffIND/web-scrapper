@@ -1,2 +1,222 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+import tkinter as tk
+from tkinter import ttk, messagebox
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
+import requests
+from bs4 import BeautifulSoup
+import csv
+import os
+from urllib.parse import urljoin
+import logging
+import threading
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class WebScraperApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Web Scraper")
+        self.root.geometry("800x600")
+        self.style = ttk.Style("darkly")  # Modern dark theme
+
+        
+        self.main_frame = ttk.Frame(self.root, padding="15")
+        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        
+        ttk.Label(self.main_frame, text="Web Scraper", font=("Helvetica", 24, "bold"), bootstyle=PRIMARY).grid(row=0, column=0, columnspan=3, pady=10)
+
+        
+        ttk.Label(self.main_frame, text="Website URL:", font=("Helvetica", 12)).grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.url_entry = ttk.Entry(self.main_frame, width=50, font=("Helvetica", 10))
+        self.url_entry.grid(row=1, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        self.url_entry.insert(0, "https://example.com")
+
+        
+        ttk.Label(self.main_frame, text="Max Pages:", font=("Helvetica", 12)).grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.max_pages_var = tk.StringVar(value="3")
+        self.max_pages_entry = ttk.Entry(self.main_frame, textvariable=self.max_pages_var, width=10, font=("Helvetica", 10))
+        self.max_pages_entry.grid(row=2, column=1, sticky=tk.W, pady=5)
+
+        
+        self.scrape_button = ttk.Button(self.main_frame, text="Scrape Now", command=self.start_scraping, bootstyle=(SUCCESS, OUTLINE), padding=10)
+        self.scrape_button.grid(row=3, column=0, columnspan=3, pady=20)
+
+        
+        self.tree_frame = ttk.Frame(self.main_frame)
+        self.tree_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        self.tree = ttk.Treeview(self.tree_frame, columns=("Title", "Link"), show="headings", height=15, bootstyle=INFO)
+        self.tree.heading("Title", text="Article Title")
+        self.tree.heading("Link", text="URL")
+        self.tree.column("Title", width=400)
+        self.tree.column("Link", width=300)
+        self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview, bootstyle=INFO)
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        
+        self.status_label = ttk.Label(self.main_frame, text="", font=("Helvetica", 10), bootstyle=INFO)
+        self.status_label.grid(row=5, column=0, columnspan=3, pady=10)
+
+        
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        self.main_frame.columnconfigure(1, weight=1)
+        self.tree_frame.columnconfigure(0, weight=1)
+        self.tree_frame.rowconfigure(0, weight=1)
+
+    def start_scraping(self):
+        """Start the scraping process in a separate thread."""
+        url = self.url_entry.get().strip()
+        try:
+            max_pages = int(self.max_pages_var.get())
+            if max_pages <= 0:
+                raise ValueError("Max pages must be positive")
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid number for max pages")
+            return
+
+        if not url or not url.startswith(('http', 'https')):
+            messagebox.showerror("Error", "Please enter a valid URL (starting with http or https)")
+            return
+
+        
+        self.scrape_button.config(state='disabled')
+        self.status_label.config(text="Scraping in progress...")
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        
+        threading.Thread(target=self.scrape_website, args=(url, max_pages), daemon=True).start()
+
+    def scrape_website(self, url, max_pages):
+        """
+        Scrapes article titles and links, saves to CSV, and updates the table.
+        Only includes articles with valid titles and links.
+        """
+        try:
+            articles = []
+            visited_urls = set()
+            urls_to_visit = [url]
+            page_count = 0
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+            while urls_to_visit and page_count < max_pages:
+                current_url = urls_to_visit.pop(0)
+                
+                if current_url in visited_urls:
+                    continue
+
+                logger.info(f"Scraping page: {current_url}")
+                self.root.after(0, lambda: self.status_label.config(text=f"Scraping: {current_url}"))
+
+                response = requests.get(current_url, headers=headers)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                
+                containers = soup.find_all(['article', 'div', 'section', 'li', 'h1', 'h2', 'h3'])
+                
+                for container in containers:
+                    
+                    link_element = container.find('a', href=True)
+                    if not link_element:
+                        logger.debug(f"No link found in container: {container.get_text(strip=True)[:50]}...")
+                        continue
+                    
+                    
+                    title = link_element.get_text(strip=True)
+                    if not title:
+                        title = container.get_text(strip=True)
+                    
+                   
+                    link = urljoin(current_url, link_element['href'])
+                    
+                    
+                    if (title and link and link.startswith(('http', 'https')) and 
+                        title.strip() and title not in [a['title'] for a in articles]):
+                        articles.append({'title': title.strip(), 'link': link})
+                        logger.info(f"Found article: {title} ({link})")
+                
+                
+                for link in soup.find_all('a', href=True):
+                    next_url = urljoin(current_url, link['href'])
+                    if url in next_url and next_url not in visited_urls:
+                        urls_to_visit.append(next_url)
+                
+                visited_urls.add(current_url)
+                page_count += 1
+
+            
+            success = self.save_to_csv(articles)
+            self.root.after(0, self.display_results, articles, success)
+            logger.info(f"Scraped {len(articles)} articles successfully")
+
+        except requests.RequestException as e:
+            logger.error(f"Error fetching URL {url}: {str(e)}")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch URL: {str(e)}"))
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Unexpected error: {str(e)}"))
+        finally:
+            self.root.after(0, lambda: self.scrape_button.config(state='normal'))
+
+    def save_to_csv(self, articles):
+        """Saves scraped articles to a CSV file and verifies the save."""
+        try:
+            csv_file = 'scraped_articles.csv'
+            with open(csv_file, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['title', 'link']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for article in articles:
+                    writer.writerow(article)
+            
+            
+            if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
+                logger.info(f"Data successfully saved to {csv_file}")
+                return True
+            else:
+                logger.error("CSV file is empty or not created")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error saving to CSV: {str(e)}")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Error saving to CSV: {str(e)}"))
+            return False
+
+    def display_results(self, articles, save_success):
+        """Display scraped results in the table and update status."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        if not articles:
+            self.status_label.config(text="No articles with valid links found.")
+            return
+
+        for article in self.tree.get_children():
+            self.tree.delete(article)
+
+        for article in articles:
+            self.tree.insert("", "end", values=(article['title'], article['link']))
+        
+        status_text = f"Found {len(articles)} articles."
+        if save_success:
+            status_text += " Data saved to scraped_articles.csv."
+        else:
+            status_text += " Failed to save data to CSV."
+        self.status_label.config(text=status_text)
+
+def main():
+    root = ttk.Window()
+    app = WebScraperApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
